@@ -33,12 +33,9 @@ app.post('/webhook', async (req, res) => {
       const senderId = messaging.sender.id;
       const userMessage = messaging.message.text;
       
-      console.log(`Message from ${senderId}: ${userMessage}`);
+      console.log('Message from ' + senderId + ': ' + userMessage);
       
-      // Claude AI 응답 생성
       const aiResponse = await getAIResponse(userMessage);
-      
-      // Instagram으로 답장 전송
       await sendInstagramMessage(senderId, aiResponse);
     }
   } catch (error) {
@@ -61,8 +58,50 @@ async function getAIResponse(userMessage) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 500,
-        messages: [{
-          role: 'user',
-          content: userMessage
-        }],
-        system: 'You are a helpful customer service assista
+        messages: [{ role: 'user', content: userMessage }],
+        system: 'You are a helpful customer service assistant for onmore.au. Keep responses brief and friendly. Respond in the same language the customer uses.'
+      })
+    });
+    
+    const data = await response.json();
+    console.log('Claude API response:', JSON.stringify(data, null, 2));
+    
+    if (data.content && data.content[0]) {
+      return data.content[0].text;
+    } else {
+      console.error('Unexpected API response:', data);
+      return 'Sorry, I could not process your message.';
+    }
+  } catch (error) {
+    console.error('AI API error:', error);
+    return 'Sorry, something went wrong.';
+  }
+}
+
+// Instagram 메시지 전송
+async function sendInstagramMessage(recipientId, message) {
+  const response = await fetch('https://graph.instagram.com/v21.0/me/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + INSTAGRAM_ACCESS_TOKEN
+    },
+    body: JSON.stringify({
+      recipient: { id: recipientId },
+      message: { text: message }
+    })
+  });
+  
+  const data = await response.json();
+  console.log('Instagram response:', data);
+  return data;
+}
+
+app.get('/', (req, res) => {
+  res.send('onmore Webhook Server Running');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log('Server running on port ' + PORT);
+});
