@@ -50,52 +50,19 @@ app.post('/webhook', async (req, res) => {
 
 // Claude API 호출
 async function getAIResponse(userMessage) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: userMessage
-      }],
-      system: 'You are a helpful customer service assistant for onmore.au, a web development business in Australia. Keep responses brief and friendly. Respond in the same language the customer uses.'
-    })
-  });
-  
-  const data = await response.json();
-  return data.content[0].text;
-}
-
-// Instagram 메시지 전송
-async function sendInstagramMessage(recipientId, message) {
-  const response = await fetch(`https://graph.instagram.com/v21.0/me/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${INSTAGRAM_ACCESS_TOKEN}`
-    },
-    body: JSON.stringify({
-      recipient: { id: recipientId },
-      message: { text: message }
-    })
-  });
-  
-  const data = await response.json();
-  console.log('Instagram response:', data);
-  return data;
-}
-
-app.get('/', (req, res) => {
-  res.send('onmore Webhook Server Running');
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        messages: [{
+          role: 'user',
+          content: userMessage
+        }],
+        system: 'You are a helpful customer service assista
