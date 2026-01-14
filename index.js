@@ -296,9 +296,6 @@ app.get('/webhook', (req, res) => {
 
 // Instagram DM 수신 (POST)
 app.post('/webhook', async (req, res) => {
-  // 먼저 200 응답 (Meta는 20초 내 응답 필요)
-  res.sendStatus(200);
-  
   try {
     const rawBody = req.body;
     const signature = req.headers['x-hub-signature-256'];
@@ -307,7 +304,7 @@ app.post('/webhook', async (req, res) => {
     if (META_APP_SECRET && signature) {
       if (!verifySignature(rawBody, signature)) {
         console.error('Invalid webhook signature!');
-        return;
+        return res.sendStatus(401);
       }
     }
     
@@ -325,8 +322,11 @@ app.post('/webhook', async (req, res) => {
         await processMessagingEvent(event, pageId);
       }
     }
+    
+    res.sendStatus(200);
   } catch (error) {
     console.error('Webhook processing error:', error);
+    res.sendStatus(500);
   }
 });
 
