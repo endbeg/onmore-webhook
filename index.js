@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { kv } = require('@vercel/kv');
 
 const app = express();
 
@@ -12,6 +13,7 @@ const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'onmore_webhook_token_2
 const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const META_APP_SECRET = process.env.META_APP_SECRET;
+const REPORT_EMAIL = process.env.REPORT_EMAIL || 'hello@onmore.au';
 
 // ============================================
 // Config 로더
@@ -102,6 +104,171 @@ function markProcessed(messageId) {
     processedMessages.clear();
   }
   processedMessages.add(messageId);
+}
+
+// ============================================
+// Vercel KV - 대화 로그 저장
+// ============================================
+
+/**
+ * 대화 로그 저장
+ * Key 구조:
+ * - chat:{clientId}:{date}:{uniqueId} - 개별 대화
+ * - chatindex:{clientId}:{date} - 날짜별 인덱스 (list)
+ * - lead:{clientId}:{date}:{uniqueId} - 리드 정보
+ * - leadindex:{clientId}:{date} - 리드 인덱스 (list)
+ */
+async function saveConversation(clientId, channel, userId, userMessage, botReply) {
+  try {
+    const now = new Date();
+    const date = now.toISOString().split('T')[0]; // YYYY-MM-DD
+    const timestamp = now.toISOString();
+    const uniqueId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    const conversation = {
+      id: uniqueId,
+      clientId,
+      channel, // 'instagram' or 'webchat'
+      userId,
+      userMessage,
+      botReply,
+      timestamp,
+      date
+    };
+    
+    // 개별 대화 저장 (7일 TTL)
+    const chatKey = `chat:${clientId}:${date}:${uniqueId}`;
+    await kv.set(chatKey, conversation, { ex: 60 * 60 * 24 * 7 });
+    
+    // 날짜별 인덱스에 추가
+    const indexKey = `chatindex:${clientId}:${date}`;
+    await kv.lpush(indexKey, uniqueId);
+    await kv.expire(indexKey, 60 * 60 * 24 * 7);
+    
+    // 일일 통계 업데이트
+    const statsKey = `stats:${clientId}:${date}`;
+    await kv.hincrby(statsKey, 'totalChats', 1);
+    await kv.hincrby(statsKey, `channel:${channel}`, 1);
+    await kv.hincrby(statsKey, `hour:${now.getUTCHours()}`, 1);
+    await kv.expire(statsKey, 60 * 60 * 24 * 7);
+    
+    console.log(`Saved conversation: ${chatKey}`);
+    return conversation;
+  } catch (error) {
+    console.error('Failed to save conversation:', error);
+    // 저장 실패해도 서비스는 계속
+    return null;
+  }
+}
+
+/**
+ * 리드 정보 저장
+ */
+async function saveLead(clientId, channel, userId, leadData) {
+  try {
+    const now = new Date();
+    const date = now.toISOString().split('T')[0];
+    const timestamp = now.toISOString();
+    const uniqueId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    const lead = {
+      id: uniqueId,
+      clientId,
+      channel,
+      userId,
+      ...leadData, // name, email, phone, interest 등
+      timestamp,
+      date
+    };
+    
+    // 리드 저장 (30일 TTL)
+    const leadKey = `lead:${clientId}:${date}:${uniqueId}`;
+    await kv.set(leadKey, lead, { ex: 60 * 60 * 24 * 30 });
+    
+    // 리드 인덱스에 추가
+    const indexKey = `leadindex:${clientId}:${date}`;
+    await kv.lpush(indexKey, uniqueId);
+    await kv.expire(indexKey, 60 * 60 * 24 * 30);
+    
+    // 일일 통계 업데이트
+    const statsKey = `stats:${clientId}:${date}`;
+    await kv.hincrby(statsKey, 'totalLeads', 1);
+    
+    console.log(`Saved lead: ${leadKey}`);
+    return lead;
+  } catch (error) {
+    console.error('Failed to save lead:', error);
+    return null;
+  }
+}
+
+/**
+ * 특정 기간의 통계 조회 (주간 리포트용)
+ */
+async function getWeeklyStats(clientId, startDate, endDate) {
+  try {
+    const stats = {
+      totalChats: 0,
+      totalLeads: 0,
+      channelBreakdown: { instagram: 0, webchat: 0 },
+      hourlyBreakdown: {},
+      conversations: [],
+      leads: []
+    };
+    
+    // 날짜 범위 생성
+    const dates = [];
+    const current = new Date(startDate);
+    const end = new Date(endDate);
+    while (current <= end) {
+      dates.push(current.toISOString().split('T')[0]);
+      current.setDate(current.getDate() + 1);
+    }
+    
+    // 각 날짜별 통계 수집
+    for (const date of dates) {
+      const statsKey = `stats:${clientId}:${date}`;
+      const dayStats = await kv.hgetall(statsKey);
+      
+      if (dayStats) {
+        stats.totalChats += parseInt(dayStats.totalChats || 0);
+        stats.totalLeads += parseInt(dayStats.totalLeads || 0);
+        stats.channelBreakdown.instagram += parseInt(dayStats['channel:instagram'] || 0);
+        stats.channelBreakdown.webchat += parseInt(dayStats['channel:webchat'] || 0);
+        
+        // 시간대별 통계
+        for (let h = 0; h < 24; h++) {
+          const hourKey = `hour:${h}`;
+          if (dayStats[hourKey]) {
+            stats.hourlyBreakdown[h] = (stats.hourlyBreakdown[h] || 0) + parseInt(dayStats[hourKey]);
+          }
+        }
+      }
+      
+      // 대화 샘플 수집 (최근 50개)
+      const chatIndexKey = `chatindex:${clientId}:${date}`;
+      const chatIds = await kv.lrange(chatIndexKey, 0, 49);
+      for (const chatId of chatIds || []) {
+        const chatKey = `chat:${clientId}:${date}:${chatId}`;
+        const chat = await kv.get(chatKey);
+        if (chat) stats.conversations.push(chat);
+      }
+      
+      // 리드 수집
+      const leadIndexKey = `leadindex:${clientId}:${date}`;
+      const leadIds = await kv.lrange(leadIndexKey, 0, 99);
+      for (const leadId of leadIds || []) {
+        const leadKey = `lead:${clientId}:${date}:${leadId}`;
+        const lead = await kv.get(leadKey);
+        if (lead) stats.leads.push(lead);
+      }
+    }
+    
+    return stats;
+  } catch (error) {
+    console.error('Failed to get weekly stats:', error);
+    return null;
+  }
 }
 
 // ============================================
@@ -367,7 +534,8 @@ async function processMessagingEvent(event, pageId) {
     const aiResponse = await getAIResponse(userMessage, clientId);
     await sendInstagramMessage(senderId, aiResponse);
     
-    // 처리 완료 표시
+    await saveConversation(clientId, 'instagram', senderId, userMessage, aiResponse);
+    
     markProcessed(messageId);
   } catch (error) {
     console.error(`Error processing message ${messageId}:`, error);
@@ -389,6 +557,10 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
     const resolvedClientId = clientId || client?.id || 'onmore';
     
     const reply = await getAIResponseWithHistory(messages, resolvedClientId);
+    
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    const sessionId = req.headers['x-session-id'] || 'anonymous';
+    await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', reply);
     
     return res.status(200).json({ reply });
   } catch (error) {

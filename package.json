@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "express": "^5.2.1"
+    "@vercel/kv": "^3.0.0",
+    "express": "^5.2.1",
+    "resend": "^4.0.0"
   }
 }
