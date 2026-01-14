@@ -217,7 +217,7 @@ module.exports = async function handler(req, res) {
     const emailHtml = buildEmailHtml(stats, startStr, endStr);
 
     const { data, error } = await resend.emails.send({
-      from: 'onmore Chatbot <noreply@onmore.au>',
+      from: 'onmore Chatbot <onboarding@resend.dev>',
       to: [REPORT_EMAIL],
       subject: `Weekly Chatbot Report: ${startStr} - ${endStr}`,
       html: emailHtml
