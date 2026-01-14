@@ -1,0 +1,18 @@
+{
+  "clients": [
+    {
+      "id": "onmore",
+      "name": "onmore",
+      "domain": "onmore.au",
+      "allowedOrigins": [
+        "https://onmore.au",
+        "https://www.onmore.au",
+        "http://localhost:3000"
+      ],
+      "instagramRecipientIds": [],
+      "promptFile": "onmore.json",
+      "active": true
+    }
+  ],
+  "defaultClientId": "onmore"
+}
