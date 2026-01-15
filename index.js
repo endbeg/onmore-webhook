@@ -573,6 +573,13 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
 app.options('/api/chat', corsMiddleware);
 
 // ============================================
+// Weekly Report API
+// ============================================
+const weeklyReportHandler = require('./api/cron/weekly-report');
+app.get('/api/cron/weekly-report', weeklyReportHandler);
+app.post('/api/cron/weekly-report', weeklyReportHandler);
+
+// ============================================
 // 서버 시작
 // ============================================
 const PORT = process.env.PORT || 3000;

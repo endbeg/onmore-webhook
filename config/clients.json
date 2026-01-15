@@ -9,7 +9,7 @@
         "https://www.onmore.au",
         "http://localhost:3000"
       ],
-      "instagramRecipientIds": [],
+      "instagramRecipientIds": ["17841480128807604"],
       "promptFile": "onmore.json",
       "active": true
     }
