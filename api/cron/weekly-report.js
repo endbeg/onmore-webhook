@@ -818,7 +818,6 @@ module.exports = async function handler(req, res) {
       endStr = req.query.end;
     } else {
       const endDate = new Date(now);
-      endDate.setDate(endDate.getDate() - 1);
       const startDate = new Date(endDate);
       startDate.setDate(startDate.getDate() - 6);
       startStr = startDate.toISOString().split('T')[0];
