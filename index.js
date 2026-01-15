@@ -88,6 +88,22 @@ function buildSystemPrompt(prompt) {
 }
 
 // ============================================
+// 리드 감지 (이메일, 전화번호)
+// ============================================
+const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+const PHONE_REGEX = /(?:\+?61|0)[\s.-]?4[\s.-]?\d{2}[\s.-]?\d{3}[\s.-]?\d{3}|\d{10,11}/g;
+
+function extractLeadInfo(text) {
+  const emails = text.match(EMAIL_REGEX) || [];
+  const phones = text.match(PHONE_REGEX) || [];
+  if (emails.length === 0 && phones.length === 0) return null;
+  return {
+    email: emails[0] || null,
+    phone: phones[0] || null
+  };
+}
+
+// ============================================
 // 메시지 중복 방지 (in-memory, 서버리스 환경에서는 제한적)
 // ============================================
 const processedMessages = new Set();
@@ -536,6 +552,11 @@ async function processMessagingEvent(event, pageId) {
     
     await saveConversation(clientId, 'instagram', senderId, userMessage, aiResponse);
     
+    const leadInfo = extractLeadInfo(userMessage);
+    if (leadInfo) {
+      await saveLead(clientId, 'instagram', senderId, leadInfo);
+    }
+    
     markProcessed(messageId);
   } catch (error) {
     console.error(`Error processing message ${messageId}:`, error);
@@ -561,6 +582,12 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
     const lastUserMessage = messages.filter(m => m.role === 'user').pop();
     const sessionId = req.headers['x-session-id'] || 'anonymous';
     await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', reply);
+    
+    const allUserText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
+    const leadInfo = extractLeadInfo(allUserText);
+    if (leadInfo) {
+      await saveLead(resolvedClientId, 'webchat', sessionId, leadInfo);
+    }
     
     return res.status(200).json({ reply });
   } catch (error) {
