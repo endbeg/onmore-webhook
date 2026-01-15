@@ -3,6 +3,7 @@ const { Resend } = require('resend');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const REPORT_EMAIL = process.env.REPORT_EMAIL || 'hello@onmore.au';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 async function getWeeklyStats(clientId, startDate, endDate) {
   const stats = {
@@ -72,17 +73,45 @@ function getPeakHour(hourlyBreakdown) {
   return { hour: maxHour, count: maxCount };
 }
 
-function getTopQuestions(conversations, limit = 5) {
-  const questions = {};
-  for (const conv of conversations) {
-    const msg = conv.userMessage?.toLowerCase().trim();
-    if (!msg) continue;
-    questions[msg] = (questions[msg] || 0) + 1;
+async function getTopQuestions(conversations, limit = 5) {
+  const messages = conversations
+    .map(c => c.userMessage)
+    .filter(m => m && m.trim().length > 0);
+  
+  if (messages.length === 0) return [];
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 500,
+        temperature: 0.3,
+        messages: [
+          {
+            role: 'system',
+            content: `Analyze these customer messages and group them into top ${limit} question categories. Count how many messages fit each category. Return JSON array only: [{"question": "category description", "count": number}]. Be concise. Korean or English based on input.`
+          },
+          {
+            role: 'user',
+            content: messages.join('\n')
+          }
+        ]
+      })
+    });
+    
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '[]';
+    const parsed = JSON.parse(content.replace(/```json\n?|\n?```/g, ''));
+    return parsed.slice(0, limit);
+  } catch (error) {
+    console.error('Failed to analyze questions:', error);
+    return [];
   }
-  return Object.entries(questions)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([q, count]) => ({ question: q, count }));
 }
 
 function formatAEST(utcHour) {
@@ -92,9 +121,9 @@ function formatAEST(utcHour) {
   return `${hour12}${period} AEST`;
 }
 
-function buildEmailHtml(stats, startDate, endDate) {
+async function buildEmailHtml(stats, startDate, endDate) {
   const peak = getPeakHour(stats.hourlyBreakdown);
-  const topQuestions = getTopQuestions(stats.conversations);
+  const topQuestions = await getTopQuestions(stats.conversations);
 
   const topQuestionsHtml = topQuestions.length > 0
     ? topQuestions.map(q => `<li>"${q.question}" (${q.count}x)</li>`).join('')
@@ -220,7 +249,7 @@ module.exports = async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to fetch stats' });
     }
 
-    const emailHtml = buildEmailHtml(stats, startStr, endStr);
+    const emailHtml = await buildEmailHtml(stats, startStr, endStr);
 
     const { data, error } = await resend.emails.send({
       from: 'onmore Chatbot <onboarding@resend.dev>',
