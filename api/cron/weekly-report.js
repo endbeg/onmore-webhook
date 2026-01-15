@@ -200,13 +200,19 @@ module.exports = async function handler(req, res) {
 
   try {
     const now = new Date();
-    const endDate = new Date(now);
-    endDate.setDate(endDate.getDate() - 1);
-    const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 6);
-
-    const startStr = startDate.toISOString().split('T')[0];
-    const endStr = endDate.toISOString().split('T')[0];
+    let startStr, endStr;
+    
+    if (req.query.start && req.query.end) {
+      startStr = req.query.start;
+      endStr = req.query.end;
+    } else {
+      const endDate = new Date(now);
+      endDate.setDate(endDate.getDate() - 1);
+      const startDate = new Date(endDate);
+      startDate.setDate(startDate.getDate() - 6);
+      startStr = startDate.toISOString().split('T')[0];
+      endStr = endDate.toISOString().split('T')[0];
+    }
 
     const stats = await getWeeklyStats('onmore', startStr, endStr);
 
