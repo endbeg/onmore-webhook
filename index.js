@@ -677,6 +677,13 @@ app.get('/api/cron/weekly-report', weeklyReportHandler);
 app.post('/api/cron/weekly-report', weeklyReportHandler);
 
 // ============================================
+// Data Backup API
+// ============================================
+const backupHandler = require('./api/cron/backup-data');
+app.get('/api/cron/backup-data', backupHandler);
+app.post('/api/cron/backup-data', backupHandler);
+
+// ============================================
 // 서버 시작
 // ============================================
 const PORT = process.env.PORT || 3000;
