@@ -421,14 +421,21 @@ async function buildDetailHtml(stats, startDate, endDate, afterHours, roi, peak,
     : '';
 
   const leadsHtml = stats.leads.length > 0
-    ? stats.leads.map(l => `
+    ? stats.leads.map(l => {
+        const time = new Date(l.timestamp);
+        const aestTime = new Date(time.getTime() + 11 * 60 * 60 * 1000);
+        const timeStr = aestTime.toLocaleString('en-AU', { 
+          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true 
+        });
+        return `
         <div class="lead-item">
           <div class="lead-info">
             <div class="lead-email">${l.email || 'No email'}</div>
-            <div class="lead-meta">${l.phone || 'No phone'} · ${l.channel}</div>
+            <div class="lead-meta">${l.phone || 'No phone'} · ${l.channel} · ${timeStr}</div>
           </div>
         </div>
-      `).join('')
+      `;
+      }).join('')
     : '<div class="empty-state">No leads captured this period</div>';
 
   return `
