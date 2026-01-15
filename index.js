@@ -563,33 +563,103 @@ async function processMessagingEvent(event, pageId) {
   }
 }
 
-// 웹챗 API (POST /api/chat)
+// 웹챗 API (POST /api/chat) - 스트리밍 지원
 app.post('/api/chat', corsMiddleware, async (req, res) => {
   try {
-    const { messages, clientId } = req.body;
+    const { messages, clientId, stream } = req.body;
     
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: 'Messages array required' });
     }
     
-    // Origin 기반 클라이언트 식별
     const origin = req.headers.origin;
     const client = getClientByOrigin(origin);
     const resolvedClientId = clientId || client?.id || 'onmore';
     
-    const reply = await getAIResponseWithHistory(messages, resolvedClientId);
-    
-    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
-    const sessionId = req.headers['x-session-id'] || 'anonymous';
-    await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', reply);
-    
-    const allUserText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
-    const leadInfo = extractLeadInfo(allUserText);
-    if (leadInfo) {
-      await saveLead(resolvedClientId, 'webchat', sessionId, leadInfo);
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      
+      const config = loadConfig();
+      const clientConfig = config.clients.find(c => c.id === resolvedClientId) || config.clients[0];
+      const prompt = loadPrompt(clientConfig.promptFile);
+      const systemPrompt = buildSystemPrompt(prompt);
+      
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          max_tokens: 500,
+          temperature: 0.7,
+          stream: true,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...messages
+          ]
+        })
+      });
+      
+      let fullReply = '';
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              res.write('data: [DONE]\n\n');
+              continue;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                fullReply += content;
+                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+              }
+            } catch (e) {}
+          }
+        }
+      }
+      
+      const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+      const sessionId = req.headers['x-session-id'] || 'anonymous';
+      await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', fullReply);
+      
+      const allUserText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
+      const leadInfo = extractLeadInfo(allUserText);
+      if (leadInfo) {
+        await saveLead(resolvedClientId, 'webchat', sessionId, leadInfo);
+      }
+      
+      res.end();
+    } else {
+      const reply = await getAIResponseWithHistory(messages, resolvedClientId);
+      
+      const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+      const sessionId = req.headers['x-session-id'] || 'anonymous';
+      await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', reply);
+      
+      const allUserText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
+      const leadInfo = extractLeadInfo(allUserText);
+      if (leadInfo) {
+        await saveLead(resolvedClientId, 'webchat', sessionId, leadInfo);
+      }
+      
+      return res.status(200).json({ reply });
     }
-    
-    return res.status(200).json({ reply });
   } catch (error) {
     console.error('Chat API error:', error);
     return res.status(500).json({ error: 'Failed to get response' });
