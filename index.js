@@ -766,17 +766,23 @@ app.options('/api/chat', corsMiddleware);
 app.post('/api/engagement', corsMiddleware, express.json(), async (req, res) => {
   try {
     const data = req.body;
-    console.log('[engagement] Received:', JSON.stringify(data), 'Origin:', req.headers.origin);
+    
+    const geoInfo = {
+      ip: req.headers['x-forwarded-for']?.split(',')[0] || req.ip,
+      country: req.headers['x-vercel-ip-country'] || null,
+      city: req.headers['x-vercel-ip-city'] || null,
+      region: req.headers['x-vercel-ip-country-region'] || null
+    };
+    
+    console.log('[engagement] Received:', data.eventType, 'Geo:', geoInfo.country, geoInfo.city);
     
     if (!supabase) {
-      console.log('[engagement] No supabase');
       return res.status(200).json({ ok: true });
     }
     
     const origin = req.headers.origin;
     const client = await getClientByOrigin(origin);
     const clientId = client?.id;
-    console.log('[engagement] Client:', clientId, 'Domain:', client?.domain);
     
     if (!clientId) {
       console.log('[engagement] No client found for origin:', origin);
@@ -842,6 +848,36 @@ app.post('/api/engagement', corsMiddleware, express.json(), async (req, res) => 
     await supabase.from('engagement_stats').upsert(stats, { 
       onConflict: 'client_id,date' 
     });
+    
+    // Save raw event for detailed analytics
+    if (data.eventType === 'session_end' || data.eventType === 'chat_closed') {
+      await supabase.from('engagement_events').insert({
+        client_id: clientId,
+        session_id: data.sessionId,
+        event_type: data.eventType,
+        device: data.device,
+        browser: data.browser,
+        os: data.os,
+        referrer: data.referrer,
+        referrer_full: data.referrerFull,
+        page_url: data.pageUrl,
+        page_path: data.pagePath,
+        screen_width: data.screenWidth,
+        screen_height: data.screenHeight,
+        viewport_width: data.viewportWidth,
+        viewport_height: data.viewportHeight,
+        timezone: data.timezone,
+        language: data.language,
+        country: geoInfo.country,
+        city: geoInfo.city,
+        region: geoInfo.region,
+        time_to_open: data.timeToOpen,
+        time_to_first_message: data.timeToFirstMessage,
+        session_duration: data.sessionDuration,
+        message_count: data.messageCount || 0,
+        created_at: new Date().toISOString()
+      }).catch(err => console.log('[engagement] Event insert error:', err.message));
+    }
     
     const hour = new Date().getHours();
     const { data: hourlyData } = await supabase
