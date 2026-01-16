@@ -854,6 +854,8 @@ app.post('/api/engagement', corsMiddleware, express.json(), async (req, res) => 
       await supabase.from('engagement_events').insert({
         client_id: clientId,
         session_id: data.sessionId,
+        visitor_id: data.visitorId || null,
+        is_returning: data.isReturning || false,
         event_type: data.eventType,
         device: data.device,
         browser: data.browser,
