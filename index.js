@@ -1,8 +1,11 @@
+require('dotenv').config({ path: '.env.local' });
+
 const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { kv } = require('@vercel/kv');
+const { supabase } = require('./lib/supabase');
 
 const app = express();
 
@@ -16,73 +19,100 @@ const META_APP_SECRET = process.env.META_APP_SECRET;
 const REPORT_EMAIL = process.env.REPORT_EMAIL || 'hello@onmore.au';
 
 // ============================================
-// Config 로더
+// Config 로더 (Supabase)
 // ============================================
-function loadConfig() {
-  const clientsPath = path.join(__dirname, 'config', 'clients.json');
-  const clients = JSON.parse(fs.readFileSync(clientsPath, 'utf-8'));
-  return clients;
-}
+async function getClientByOrigin(origin) {
+  const { data: clients } = await supabase
+    .from('clients')
+    .select('*, chatbot_configs(*)')
+    .eq('status', 'active');
+  
+  if (!clients || clients.length === 0) {
+    return null;
+  }
 
-function loadPrompt(promptFile) {
-  const promptPath = path.join(__dirname, 'config', 'prompts', promptFile);
-  return JSON.parse(fs.readFileSync(promptPath, 'utf-8'));
-}
-
-function getClientByOrigin(origin) {
-  const config = loadConfig();
-  for (const client of config.clients) {
-    if (client.active && client.allowedOrigins.some(o => origin?.includes(o) || o.includes(origin))) {
+  for (const client of clients) {
+    if (client.domain && origin?.includes(client.domain)) {
       return client;
     }
   }
-  // fallback to default
-  return config.clients.find(c => c.id === config.defaultClientId);
+  
+  return clients[0];
 }
 
-function getClientByInstagramId(recipientId) {
-  const config = loadConfig();
-  for (const client of config.clients) {
-    if (client.active && client.instagramRecipientIds.includes(recipientId)) {
-      return client;
-    }
+async function getClientByInstagramId(recipientId) {
+  const { data: clients } = await supabase
+    .from('clients')
+    .select('*, chatbot_configs(*)')
+    .eq('status', 'active');
+  
+  if (!clients || clients.length === 0) {
+    return null;
   }
-  // fallback to default
-  return config.clients.find(c => c.id === config.defaultClientId);
+  
+  return clients[0];
 }
 
-function buildSystemPrompt(prompt) {
+function buildSystemPrompt(client) {
+  const config = client.chatbot_configs?.[0];
+  
+  if (!config) {
+    return 'You are a helpful AI assistant.';
+  }
+
   const parts = [];
   
-  // Identity
-  parts.push(prompt.system.identity);
-  
-  // Role
-  parts.push('\nYour role:\n' + prompt.system.role.map(r => '- ' + r).join('\n'));
-  
-  // Services & Pricing
-  parts.push('\nOur services:');
-  for (const svc of prompt.services) {
-    const priceStr = `$${svc.price}/${svc.period}`;
-    const badge = svc.badge ? ` (${svc.badge})` : '';
-    parts.push(`- ${svc.name}: ${priceStr}${badge} - ${svc.features.join(', ')}`);
+  if (config.identity) {
+    parts.push(config.identity);
   }
   
-  // Business info
-  parts.push(`\nBusiness: ${prompt.business.name} (${prompt.business.domain})`);
-  parts.push(`Location: ${prompt.business.location}`);
-  parts.push(`Guarantee: ${prompt.business.guarantee}`);
-  
-  // FAQ (optional context)
-  if (prompt.faq && prompt.faq.length > 0) {
-    parts.push('\nCommon Q&A for reference:');
-    for (const item of prompt.faq.slice(0, 5)) {
-      parts.push(`Q: ${item.q}\nA: ${item.a}`);
-    }
+  if (config.role && Array.isArray(config.role) && config.role.length > 0) {
+    parts.push('\n## Your Role:');
+    parts.push(config.role.map(r => `- ${r}`).join('\n'));
   }
   
-  // Rules
-  parts.push('\n' + prompt.system.rules.join('\n'));
+  if (config.rules && Array.isArray(config.rules) && config.rules.length > 0) {
+    parts.push('\n## Guidelines:');
+    parts.push(config.rules.map(r => `- ${r}`).join('\n'));
+  }
+  
+  if (config.business_info) {
+    const biz = config.business_info;
+    parts.push('\n## Business Information:');
+    if (biz.name) parts.push(`Company: ${biz.name}`);
+    if (biz.domain) parts.push(`Website: ${biz.domain}`);
+    if (biz.email) parts.push(`Email: ${biz.email}`);
+    if (biz.location) parts.push(`Location: ${biz.location}`);
+    if (biz.description) parts.push(`About: ${biz.description}`);
+    if (biz.guarantee) parts.push(`Guarantee: ${biz.guarantee}`);
+  }
+  
+  if (config.service_plans && Array.isArray(config.service_plans) && config.service_plans.length > 0) {
+    parts.push('\n## Services & Pricing:');
+    config.service_plans.forEach(plan => {
+      const price = plan.price ? `$${plan.price} ${plan.currency}/${plan.period}` : '';
+      const badge = plan.badge ? ` [${plan.badge}]` : '';
+      parts.push(`\n**${plan.name}**${badge} ${price}`);
+      if (plan.features && plan.features.length > 0) {
+        parts.push(plan.features.map(f => `  - ${f}`).join('\n'));
+      }
+      if (plan.savings) {
+        parts.push(`  💰 Save $${plan.savings}/month`);
+      }
+    });
+  }
+  
+  if (config.faq && Array.isArray(config.faq) && config.faq.length > 0) {
+    parts.push('\n## Common Questions:');
+    config.faq.forEach(item => {
+      parts.push(`\nQ: ${item.q}`);
+      parts.push(`A: ${item.a}`);
+    });
+  }
+  
+  if (config.business_hours) {
+    parts.push(`\n## Business Hours: ${config.business_hours}`);
+  }
   
   return parts.join('\n');
 }
@@ -136,82 +166,74 @@ function markProcessed(messageId) {
  */
 async function saveConversation(clientId, channel, userId, userMessage, botReply) {
   try {
-    const now = new Date();
-    const date = now.toISOString().split('T')[0]; // YYYY-MM-DD
-    const timestamp = now.toISOString();
-    const uniqueId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const { data, error } = await supabase
+      .from('conversations')
+      .insert({
+        client_id: clientId,
+        messages: [
+          { role: 'user', content: userMessage },
+          { role: 'assistant', content: botReply }
+        ]
+      })
+      .select()
+      .single();
     
-    const conversation = {
-      id: uniqueId,
-      clientId,
-      channel, // 'instagram' or 'webchat'
-      userId,
-      userMessage,
-      botReply,
-      timestamp,
-      date
-    };
+    if (error) throw error;
     
-    // 개별 대화 저장 (7일 TTL)
-    const chatKey = `chat:${clientId}:${date}:${uniqueId}`;
-    await kv.set(chatKey, conversation, { ex: 60 * 60 * 24 * 7 });
+    const date = new Date().toISOString().split('T')[0];
+    await supabase
+      .from('analytics')
+      .upsert({
+        client_id: clientId,
+        date,
+        total_conversations: 1
+      }, {
+        onConflict: 'client_id,date',
+        ignoreDuplicates: false
+      });
     
-    // 날짜별 인덱스에 추가
-    const indexKey = `chatindex:${clientId}:${date}`;
-    await kv.lpush(indexKey, uniqueId);
-    await kv.expire(indexKey, 60 * 60 * 24 * 7);
-    
-    // 일일 통계 업데이트
-    const statsKey = `stats:${clientId}:${date}`;
-    await kv.hincrby(statsKey, 'totalChats', 1);
-    await kv.hincrby(statsKey, `channel:${channel}`, 1);
-    await kv.hincrby(statsKey, `hour:${now.getUTCHours()}`, 1);
-    await kv.expire(statsKey, 60 * 60 * 24 * 7);
-    
-    console.log(`Saved conversation: ${chatKey}`);
-    return conversation;
+    console.log(`Saved conversation to Supabase: ${data.id}`);
+    return data;
   } catch (error) {
     console.error('Failed to save conversation:', error);
-    // 저장 실패해도 서비스는 계속
     return null;
   }
 }
 
-/**
- * 리드 정보 저장
- */
 async function saveLead(clientId, channel, userId, leadData) {
   try {
-    const now = new Date();
-    const date = now.toISOString().split('T')[0];
-    const timestamp = now.toISOString();
-    const uniqueId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const { data: conversation, error: convError } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
     
-    const lead = {
-      id: uniqueId,
-      clientId,
-      channel,
-      userId,
-      ...leadData, // name, email, phone, interest 등
-      timestamp,
-      date
-    };
+    if (conversation) {
+      await supabase
+        .from('conversations')
+        .update({
+          lead_captured: true,
+          lead_info: leadData
+        })
+        .eq('id', conversation.id);
+    }
     
-    // 리드 저장 (30일 TTL)
-    const leadKey = `lead:${clientId}:${date}:${uniqueId}`;
-    await kv.set(leadKey, lead, { ex: 60 * 60 * 24 * 30 });
+    const date = new Date().toISOString().split('T')[0];
+    await supabase
+      .from('analytics')
+      .upsert({
+        client_id: clientId,
+        date,
+        leads_captured: 1
+      }, {
+        onConflict: 'client_id,date',
+        ignoreDuplicates: false
+      });
     
-    // 리드 인덱스에 추가
-    const indexKey = `leadindex:${clientId}:${date}`;
-    await kv.lpush(indexKey, uniqueId);
-    await kv.expire(indexKey, 60 * 60 * 24 * 30);
-    
-    // 일일 통계 업데이트
-    const statsKey = `stats:${clientId}:${date}`;
-    await kv.hincrby(statsKey, 'totalLeads', 1);
-    
-    console.log(`Saved lead: ${leadKey}`);
-    return lead;
+    console.log(`Saved lead to Supabase for client: ${clientId}`);
+    return leadData;
   } catch (error) {
     console.error('Failed to save lead:', error);
     return null;
@@ -311,12 +333,9 @@ function verifySignature(payload, signature) {
 // ============================================
 // OpenAI API 호출
 // ============================================
-async function getAIResponse(userMessage, clientId = 'onmore') {
+async function getAIResponse(userMessage, client) {
   try {
-    const config = loadConfig();
-    const client = config.clients.find(c => c.id === clientId) || config.clients[0];
-    const prompt = loadPrompt(client.promptFile);
-    const systemPrompt = buildSystemPrompt(prompt);
+    const systemPrompt = buildSystemPrompt(client);
     
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -351,12 +370,9 @@ async function getAIResponse(userMessage, clientId = 'onmore') {
 }
 
 // 웹챗용: 대화 히스토리 지원
-async function getAIResponseWithHistory(messages, clientId = 'onmore') {
+async function getAIResponseWithHistory(messages, client) {
   try {
-    const config = loadConfig();
-    const client = config.clients.find(c => c.id === clientId) || config.clients[0];
-    const prompt = loadPrompt(client.promptFile);
-    const systemPrompt = buildSystemPrompt(prompt);
+    const systemPrompt = buildSystemPrompt(client);
     
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -543,11 +559,10 @@ async function processMessagingEvent(event, pageId) {
   console.log(`[${pageId}] Message from ${senderId}: ${userMessage}`);
   
   try {
-    // 클라이언트 식별
-    const client = getClientByInstagramId(recipientId);
+    const client = await getClientByInstagramId(recipientId);
     const clientId = client?.id || 'onmore';
     
-    const aiResponse = await getAIResponse(userMessage, clientId);
+    const aiResponse = await getAIResponse(userMessage, client);
     await sendInstagramMessage(senderId, aiResponse);
     
     await saveConversation(clientId, 'instagram', senderId, userMessage, aiResponse);
@@ -573,7 +588,7 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
     }
     
     const origin = req.headers.origin;
-    const client = getClientByOrigin(origin);
+    const client = await getClientByOrigin(origin);
     const resolvedClientId = clientId || client?.id || 'onmore';
     
     if (stream) {
@@ -581,10 +596,7 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       
-      const config = loadConfig();
-      const clientConfig = config.clients.find(c => c.id === resolvedClientId) || config.clients[0];
-      const prompt = loadPrompt(clientConfig.promptFile);
-      const systemPrompt = buildSystemPrompt(prompt);
+      const systemPrompt = buildSystemPrompt(client);
       
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -646,7 +658,7 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
       
       res.end();
     } else {
-      const reply = await getAIResponseWithHistory(messages, resolvedClientId);
+      const reply = await getAIResponseWithHistory(messages, client);
       
       const lastUserMessage = messages.filter(m => m.role === 'user').pop();
       const sessionId = req.headers['x-session-id'] || 'anonymous';
