@@ -22,6 +22,11 @@ const REPORT_EMAIL = process.env.REPORT_EMAIL || 'hello@onmore.au';
 // Config 로더 (Supabase)
 // ============================================
 async function getClientByOrigin(origin) {
+  if (!supabase) {
+    console.warn('Supabase not initialized');
+    return null;
+  }
+  
   const { data: clients } = await supabase
     .from('clients')
     .select('*, chatbot_configs(*)')
@@ -41,6 +46,11 @@ async function getClientByOrigin(origin) {
 }
 
 async function getClientByInstagramId(recipientId) {
+  if (!supabase) {
+    console.warn('Supabase not initialized');
+    return null;
+  }
+  
   const { data: clients } = await supabase
     .from('clients')
     .select('*, chatbot_configs(*)')
