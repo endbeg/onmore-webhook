@@ -240,17 +240,19 @@ async function saveConversation(clientId, channel, userId, userMessage, botReply
     
     if (userMessage && userMessage.trim().length > 0) {
       const shortQuestion = userMessage.trim().substring(0, 200);
-      await supabase.rpc('increment_question_count', { 
-        p_client_id: clientId, 
-        p_question: shortQuestion 
-      }).catch(() => {
-        supabase.from('popular_questions').upsert({
+      try {
+        await supabase.rpc('increment_question_count', { 
+          p_client_id: clientId, 
+          p_question: shortQuestion 
+        });
+      } catch {
+        await supabase.from('popular_questions').upsert({
           client_id: clientId,
           question: shortQuestion,
           count: 1,
           last_asked_at: new Date().toISOString()
         }, { onConflict: 'client_id,question' });
-      });
+      }
     }
     
     return data;
@@ -761,7 +763,7 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
 // OPTIONS preflight
 app.options('/api/chat', corsMiddleware);
 
-app.post('/api/engagement', corsMiddleware, async (req, res) => {
+app.post('/api/engagement', corsMiddleware, express.json(), async (req, res) => {
   try {
     const data = req.body;
     console.log('[engagement] Received:', JSON.stringify(data), 'Origin:', req.headers.origin);
