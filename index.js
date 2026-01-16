@@ -764,16 +764,20 @@ app.options('/api/chat', corsMiddleware);
 app.post('/api/engagement', corsMiddleware, async (req, res) => {
   try {
     const data = req.body;
+    console.log('[engagement] Received:', JSON.stringify(data), 'Origin:', req.headers.origin);
     
     if (!supabase) {
+      console.log('[engagement] No supabase');
       return res.status(200).json({ ok: true });
     }
     
     const origin = req.headers.origin;
     const client = await getClientByOrigin(origin);
     const clientId = client?.id;
+    console.log('[engagement] Client:', clientId, 'Domain:', client?.domain);
     
     if (!clientId) {
+      console.log('[engagement] No client found for origin:', origin);
       return res.status(200).json({ ok: true });
     }
     
