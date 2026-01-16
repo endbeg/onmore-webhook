@@ -16,7 +16,7 @@ const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'onmore_webhook_token_2
 const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const META_APP_SECRET = process.env.META_APP_SECRET;
-const REPORT_EMAIL = process.env.REPORT_EMAIL || 'hello@onmore.au';
+const REPORT_EMAIL = process.env.REPORT_EMAIL || 'info@onmore.au';
 
 // ============================================
 // Config 로더 (Supabase)
@@ -68,7 +68,9 @@ function buildSystemPrompt(client) {
     return 'You are a helpful AI assistant for onmore, helping Australian small businesses automate customer service.';
   }
   
-  const config = client.chatbot_configs?.[0];
+  const config = Array.isArray(client.chatbot_configs) 
+    ? client.chatbot_configs[0] 
+    : client.chatbot_configs;
   
   if (!config) {
     return 'You are a helpful AI assistant for onmore, helping Australian small businesses automate customer service.';
@@ -178,9 +180,14 @@ function markProcessed(messageId) {
  * - lead:{clientId}:{date}:{uniqueId} - 리드 정보
  * - leadindex:{clientId}:{date} - 리드 인덱스 (list)
  */
-async function saveConversation(clientId, channel, userId, userMessage, botReply) {
+async function saveConversation(clientId, channel, userId, userMessage, botReply, responseTimeMs = 0, messageCount = 1) {
   if (!supabase) {
     console.log('Supabase not available, skipping conversation save');
+    return;
+  }
+  
+  if (!clientId) {
+    console.log('No clientId provided, skipping conversation save');
     return;
   }
   
@@ -197,24 +204,58 @@ async function saveConversation(clientId, channel, userId, userMessage, botReply
       .select()
       .single();
     
-    if (error) throw error;
+    if (error) {
+      console.error('[saveConversation] Insert error:', error);
+      throw error;
+    }
     
-    const date = new Date().toISOString().split('T')[0];
-    await supabase
+    const now = new Date();
+    const date = now.toISOString().split('T')[0];
+    const hour = now.getUTCHours();
+    const aestHour = (hour + 11) % 24;
+    const isAfterHours = aestHour < 9 || aestHour >= 17;
+    
+    const { data: existing } = await supabase
       .from('analytics')
-      .upsert({
-        client_id: clientId,
-        date,
-        total_conversations: 1
-      }, {
-        onConflict: 'client_id,date',
-        ignoreDuplicates: false
-      });
+      .select('*')
+      .eq('client_id', clientId)
+      .eq('date', date)
+      .single();
     
-    console.log(`Saved conversation to Supabase: ${data.id}`);
+    const analyticsData = {
+      client_id: clientId,
+      date,
+      total_conversations: (existing?.total_conversations || 0) + 1,
+      after_hours_conversations: (existing?.after_hours_conversations || 0) + (isAfterHours ? 1 : 0),
+      avg_response_time: responseTimeMs > 0 
+        ? Math.round(((existing?.avg_response_time || 0) * (existing?.total_conversations || 0) + responseTimeMs) / ((existing?.total_conversations || 0) + 1))
+        : (existing?.avg_response_time || 0),
+      avg_messages_per_conversation: Math.round(((existing?.avg_messages_per_conversation || 0) * (existing?.total_conversations || 0) + messageCount) / ((existing?.total_conversations || 0) + 1) * 10) / 10,
+      peak_hour: aestHour,
+      channel_webchat: (existing?.channel_webchat || 0) + (channel === 'webchat' ? 1 : 0),
+      channel_instagram: (existing?.channel_instagram || 0) + (channel === 'instagram' ? 1 : 0)
+    };
+    
+    await supabase.from('analytics').upsert(analyticsData, { onConflict: 'client_id,date' });
+    
+    if (userMessage && userMessage.length > 10) {
+      const shortQuestion = userMessage.substring(0, 200);
+      await supabase.rpc('increment_question_count', { 
+        p_client_id: clientId, 
+        p_question: shortQuestion 
+      }).catch(() => {
+        supabase.from('popular_questions').upsert({
+          client_id: clientId,
+          question: shortQuestion,
+          count: 1,
+          last_asked_at: new Date().toISOString()
+        }, { onConflict: 'client_id,question' });
+      });
+    }
+    
     return data;
   } catch (error) {
-    console.error('Failed to save conversation:', error);
+    console.error('[saveConversation] Failed:', error);
     return null;
   }
 }
@@ -463,22 +504,32 @@ async function sendInstagramMessage(recipientId, message) {
 // ============================================
 // CORS 미들웨어
 // ============================================
-function corsMiddleware(req, res, next) {
+async function corsMiddleware(req, res, next) {
   const origin = req.headers.origin;
-  const client = getClientByOrigin(origin);
   
-  if (client && client.allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    // 개발 환경 또는 기본값
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  }
-  
+  // CORS 헤더는 일단 설정 (async 전에 필요)
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Session-Id');
   
   if (req.method === 'OPTIONS') {
+    // preflight는 origin 검증 없이 허용
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
     return res.status(200).end();
+  }
+  
+  try {
+    const client = await getClientByOrigin(origin);
+    const allowedOrigins = client?.chatbot_configs?.[0]?.allowed_origins || [];
+    
+    if (allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else {
+      // 개발 환경 또는 기본값
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+  } catch (error) {
+    console.error('CORS middleware error:', error);
+    res.setHeader('Access-Control-Allow-Origin', '*');
   }
   
   next();
@@ -604,6 +655,8 @@ async function processMessagingEvent(event, pageId) {
 
 // 웹챗 API (POST /api/chat) - 스트리밍 지원
 app.post('/api/chat', corsMiddleware, async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { messages, clientId, stream } = req.body;
     
@@ -613,7 +666,8 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
     
     const origin = req.headers.origin;
     const client = await getClientByOrigin(origin);
-    const resolvedClientId = clientId || client?.id || 'onmore';
+    const resolvedClientId = clientId || client?.id;
+    const messageCount = messages.filter(m => m.role === 'user').length;
     
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -670,9 +724,10 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
         }
       }
       
+      const responseTimeMs = Date.now() - startTime;
       const lastUserMessage = messages.filter(m => m.role === 'user').pop();
       const sessionId = req.headers['x-session-id'] || 'anonymous';
-      await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', fullReply);
+      await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', fullReply, responseTimeMs, messageCount);
       
       const allUserText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
       const leadInfo = extractLeadInfo(allUserText);
@@ -683,10 +738,11 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
       res.end();
     } else {
       const reply = await getAIResponseWithHistory(messages, client);
+      const responseTimeMs = Date.now() - startTime;
       
       const lastUserMessage = messages.filter(m => m.role === 'user').pop();
       const sessionId = req.headers['x-session-id'] || 'anonymous';
-      await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', reply);
+      await saveConversation(resolvedClientId, 'webchat', sessionId, lastUserMessage?.content || '', reply, responseTimeMs, messageCount);
       
       const allUserText = messages.filter(m => m.role === 'user').map(m => m.content).join(' ');
       const leadInfo = extractLeadInfo(allUserText);
@@ -704,6 +760,115 @@ app.post('/api/chat', corsMiddleware, async (req, res) => {
 
 // OPTIONS preflight
 app.options('/api/chat', corsMiddleware);
+
+app.post('/api/engagement', corsMiddleware, async (req, res) => {
+  try {
+    const data = req.body;
+    
+    if (!supabase) {
+      return res.status(200).json({ ok: true });
+    }
+    
+    const origin = req.headers.origin;
+    const client = await getClientByOrigin(origin);
+    const clientId = client?.id;
+    
+    if (!clientId) {
+      return res.status(200).json({ ok: true });
+    }
+    
+    const date = new Date().toISOString().split('T')[0];
+    
+    const { data: existing } = await supabase
+      .from('engagement_stats')
+      .select('*')
+      .eq('client_id', clientId)
+      .eq('date', date)
+      .single();
+    
+    const stats = existing || {
+      client_id: clientId,
+      date: date,
+      page_views: 0,
+      chat_opens: 0,
+      first_messages: 0,
+      total_time_to_open: 0,
+      total_time_to_first_msg: 0,
+      total_session_duration: 0,
+      sessions_with_chat: 0,
+      sessions_with_message: 0,
+      device_mobile: 0,
+      device_desktop: 0,
+      bounce_sessions: 0,
+      engaged_sessions: 0
+    };
+    
+    if (data.eventType === 'chat_opened') {
+      stats.chat_opens++;
+      stats.sessions_with_chat++;
+      if (data.timeToOpen) {
+        stats.total_time_to_open += data.timeToOpen;
+      }
+    } else if (data.eventType === 'first_message') {
+      stats.first_messages++;
+      stats.sessions_with_message++;
+      if (data.timeToFirstMessage) {
+        stats.total_time_to_first_msg += data.timeToFirstMessage;
+      }
+    } else if (data.eventType === 'session_end' || data.eventType === 'page_hidden') {
+      stats.page_views++;
+      if (data.sessionDuration) {
+        stats.total_session_duration += data.sessionDuration;
+      }
+      if (data.device === 'mobile') {
+        stats.device_mobile++;
+      } else {
+        stats.device_desktop++;
+      }
+      
+      if (!data.chatOpenTime) {
+        stats.bounce_sessions++;
+      } else {
+        stats.engaged_sessions++;
+      }
+    }
+    
+    await supabase.from('engagement_stats').upsert(stats, { 
+      onConflict: 'client_id,date' 
+    });
+    
+    const hour = new Date().getHours();
+    const { data: hourlyData } = await supabase
+      .from('hourly_traffic')
+      .select('*')
+      .eq('client_id', clientId)
+      .eq('date', date)
+      .eq('hour', hour)
+      .single();
+    
+    if (hourlyData) {
+      await supabase.from('hourly_traffic').update({
+        visits: (hourlyData.visits || 0) + 1,
+        chats: (hourlyData.chats || 0) + (data.eventType === 'chat_opened' ? 1 : 0)
+      }).eq('id', hourlyData.id);
+    } else {
+      await supabase.from('hourly_traffic').insert({
+        client_id: clientId,
+        date: date,
+        hour: hour,
+        visits: 1,
+        chats: data.eventType === 'chat_opened' ? 1 : 0
+      });
+    }
+    
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error('Engagement tracking error:', error);
+    res.status(200).json({ ok: true });
+  }
+});
+
+app.options('/api/engagement', corsMiddleware);
 
 // ============================================
 // Weekly Report API

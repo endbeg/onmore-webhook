@@ -2,7 +2,7 @@ const { kv } = require('@vercel/kv');
 const { Resend } = require('resend');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const REPORT_EMAIL = process.env.REPORT_EMAIL || 'hello@onmore.au';
+const REPORT_EMAIL = process.env.REPORT_EMAIL || 'info@onmore.au';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const BUSINESS_HOURS = { start: 9, end: 17 };
