@@ -64,10 +64,14 @@ async function getClientByInstagramId(recipientId) {
 }
 
 function buildSystemPrompt(client) {
+  if (!client) {
+    return 'You are a helpful AI assistant for onmore, helping Australian small businesses automate customer service.';
+  }
+  
   const config = client.chatbot_configs?.[0];
   
   if (!config) {
-    return 'You are a helpful AI assistant.';
+    return 'You are a helpful AI assistant for onmore, helping Australian small businesses automate customer service.';
   }
 
   const parts = [];
@@ -175,6 +179,11 @@ function markProcessed(messageId) {
  * - leadindex:{clientId}:{date} - 리드 인덱스 (list)
  */
 async function saveConversation(clientId, channel, userId, userMessage, botReply) {
+  if (!supabase) {
+    console.log('Supabase not available, skipping conversation save');
+    return;
+  }
+  
   try {
     const { data, error } = await supabase
       .from('conversations')
@@ -211,6 +220,11 @@ async function saveConversation(clientId, channel, userId, userMessage, botReply
 }
 
 async function saveLead(clientId, channel, userId, leadData) {
+  if (!supabase) {
+    console.log('Supabase not available, skipping lead save');
+    return;
+  }
+  
   try {
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
