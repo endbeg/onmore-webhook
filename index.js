@@ -803,7 +803,14 @@ app.post('/api/engagement', corsMiddleware, async (req, res) => {
       engaged_sessions: 0
     };
     
-    if (data.eventType === 'chat_opened') {
+    if (data.eventType === 'page_view') {
+      stats.page_views++;
+      if (data.device === 'mobile') {
+        stats.device_mobile++;
+      } else {
+        stats.device_desktop++;
+      }
+    } else if (data.eventType === 'chat_opened') {
       stats.chat_opens++;
       stats.sessions_with_chat++;
       if (data.timeToOpen) {
@@ -816,16 +823,9 @@ app.post('/api/engagement', corsMiddleware, async (req, res) => {
         stats.total_time_to_first_msg += data.timeToFirstMessage;
       }
     } else if (data.eventType === 'session_end' || data.eventType === 'page_hidden') {
-      stats.page_views++;
       if (data.sessionDuration) {
         stats.total_session_duration += data.sessionDuration;
       }
-      if (data.device === 'mobile') {
-        stats.device_mobile++;
-      } else {
-        stats.device_desktop++;
-      }
-      
       if (!data.chatOpenTime) {
         stats.bounce_sessions++;
       } else {
