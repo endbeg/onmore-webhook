@@ -238,8 +238,8 @@ async function saveConversation(clientId, channel, userId, userMessage, botReply
     
     await supabase.from('analytics').upsert(analyticsData, { onConflict: 'client_id,date' });
     
-    if (userMessage && userMessage.length > 10) {
-      const shortQuestion = userMessage.substring(0, 200);
+    if (userMessage && userMessage.trim().length > 0) {
+      const shortQuestion = userMessage.trim().substring(0, 200);
       await supabase.rpc('increment_question_count', { 
         p_client_id: clientId, 
         p_question: shortQuestion 
